@@ -69,3 +69,19 @@ Meta: ≥50 % de reducción de tiempo y ≥3 de 4 formatos aprobados sin ajuste 
 ## Límites (alcance del PMV)
 
 Sin interfaz gráfica, sin lotes y sin publicación directa. El texto alternativo es manual: no hay API de descripción de imágenes integrada, así que ninguna imagen sale del equipo. El detector de rostros es frontal; con rostros de perfil o muy pequeños cae a saliencia o a recorte centrado.
+
+## Web (sin servidor)
+
+La carpeta `web/` es la interfaz completa: React + Tailwind, con la IA corriendo **en el navegador**
+(MediaPipe: rostros y personas), texto alternativo, paleta con contraste, zona segura de Historias y
+bitácora de IA dentro del ZIP. No necesita Python ni backend.
+
+```
+cd web
+npm install
+npm run dev      # desarrollo
+npm run build    # genera web/dist
+```
+
+Se publica sola en GitHub Pages con cada push a `main` (Settings → Pages → Source: GitHub Actions).
+`app.py` y `exportador.py` quedan como la versión de línea de comandos con bitácora y métricas.
