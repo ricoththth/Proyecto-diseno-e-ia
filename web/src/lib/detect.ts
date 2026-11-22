@@ -9,7 +9,9 @@ const OBJ_MODEL =
   "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite";
 
 export type Box = { x0: number; y0: number; x1: number; y1: number }; // píxeles
+export type Found = { box: Box; label: string; score: number };
 export type Detection = {
+  boxes: Found[]; // todo lo que vio la IA, para dibujarlo en pantalla
   method: "rostro" | "persona" | "objeto" | "centrado";
   confidence: number;
   detail: string;
@@ -71,13 +73,21 @@ export async function detectSubject(img: HTMLImageElement): Promise<Detection> {
 
   const fd = await face();
   const faces = fd.detect(img).detections.filter((d) => d.boundingBox);
+  const toBox = (d: { boundingBox?: { originX: number; originY: number; width: number; height: number } }): Box => ({
+    x0: d.boundingBox!.originX, y0: d.boundingBox!.originY,
+    x1: d.boundingBox!.originX + d.boundingBox!.width, y1: d.boundingBox!.originY + d.boundingBox!.height,
+  });
+  const boxes: Found[] = [
+    ...faces.map((d) => ({ box: toBox(d), label: "rostro", score: d.categories[0]?.score ?? 0 })),
+    ...dets.map((d) => ({ box: toBox(d), label: d.categories[0]?.categoryName ?? "objeto", score: d.categories[0]?.score ?? 0 })),
+  ];
   if (faces.length) {
     const bs = faces.map((d) => ({
       x0: d.boundingBox!.originX, y0: d.boundingBox!.originY,
       x1: d.boundingBox!.originX + d.boundingBox!.width, y1: d.boundingBox!.originY + d.boundingBox!.height,
     }));
     const conf = Math.max(...faces.map((d) => d.categories[0]?.score ?? 0));
-    return { method: "rostro", confidence: +conf.toFixed(2), detail: `${faces.length} rostro(s)`, faces: faces.length, labels, box: margin(union(bs), w, h, 0.25, 0.35) };
+    return { boxes, method: "rostro", confidence: +conf.toFixed(2), detail: `${faces.length} rostro(s)`, faces: faces.length, labels, box: margin(union(bs), w, h, 0.25, 0.35) };
   }
 
   if (dets.length) {
@@ -90,10 +100,10 @@ export async function detectSubject(img: HTMLImageElement): Promise<Detection> {
     const conf = Math.max(...use.map((d) => d.categories[0]?.score ?? 0));
     const name = use[0]?.categories[0]?.categoryName ?? "objeto";
     return {
-      method: people.length ? "persona" : "objeto", confidence: +conf.toFixed(2),
+      boxes, method: people.length ? "persona" : "objeto", confidence: +conf.toFixed(2),
       faces: 0, labels, detail: people.length ? `${people.length} persona(s)` : name, box: margin(union(bs), w, h, 0.08, 0.08),
     };
   }
 
-  return { method: "centrado", confidence: 0, detail: "sin sujeto fiable, recorte centrado", box: null, faces: 0, labels };
+  return { boxes, method: "centrado", confidence: 0, detail: "sin sujeto fiable, recorte centrado", box: null, faces: 0, labels };
 }

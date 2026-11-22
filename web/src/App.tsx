@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
-import { detectSubject, type Box } from "./lib/detect";
+import { detectSubject, type Box, type Found } from "./lib/detect";
+import { cutout } from "./lib/segment";
+import { drawTitle } from "./lib/overlay";
 import { altText, palette, type Swatch } from "./lib/extras";
 
 const FORMATS = [
@@ -13,8 +15,12 @@ const FORMATS = [
 
 type Focus ={ x: number; y: number }; // 0..1 centro del recorte
 
-function cropRect(img: HTMLImageElement, w: number, h: number, f: Focus) {
-  const iw = img.naturalWidth, ih = img.naturalHeight;
+type Src = HTMLImageElement | HTMLCanvasElement;
+const dim = (s: Src): [number, number] => (s instanceof HTMLImageElement ? [s.naturalWidth, s.naturalHeight] : [s.width, s.height]);
+const TONES = ["#a3e635", "#a78bfa", "#fb923c", "#171717"];
+
+function cropRect(img: Src, w: number, h: number, f: Focus) {
+  const [iw, ih] = dim(img);
   const r = w / h;
   let cw = iw, ch = iw / r;
   if (ch > ih) { ch = ih; cw = ih * r; }
@@ -24,8 +30,8 @@ function cropRect(img: HTMLImageElement, w: number, h: number, f: Focus) {
 }
 
 // Ventana de recorte centrada en la caja del sujeto y desplazada para que quede completa.
-function focusForBox(img: HTMLImageElement, w: number, h: number, b: Box): Focus {
-  const iw = img.naturalWidth, ih = img.naturalHeight;
+function focusForBox(img: Src, w: number, h: number, b: Box): Focus {
+  const [iw, ih] = dim(img);
   const { cw, ch } = cropRect(img, w, h, { x: 0.5, y: 0.5 });
   const fit = (c: number, lo: number, hi: number, win: number, max: number) => {
     let s = c - win / 2;
@@ -35,11 +41,20 @@ function focusForBox(img: HTMLImageElement, w: number, h: number, b: Box): Focus
   return { x: fit((b.x0 + b.x1) / 2, b.x0, b.x1, cw, iw) / iw, y: fit((b.y0 + b.y1) / 2, b.y0, b.y1, ch, ih) / ih };
 }
 
-function render(img: HTMLImageElement, w: number, h: number, f: Focus) {
+// Dibuja el recorte (y el titular, si hay) en un lienzo ya dimensionado.
+function paint(c: HTMLCanvasElement, src: Src, fmt: { id: string; w: number; h: number }, f: Focus, subject: Box | null, text: string) {
+  const { sx, sy, cw, ch } = cropRect(src, fmt.w, fmt.h, f);
+  const x = c.getContext("2d")!;
+  x.clearRect(0, 0, c.width, c.height);
+  x.drawImage(src, sx, sy, cw, ch, 0, 0, c.width, c.height);
+  const frac = subject ? { x0: (subject.x0 - sx) / cw, y0: (subject.y0 - sy) / ch, x1: (subject.x1 - sx) / cw, y1: (subject.y1 - sy) / ch } : null;
+  drawTitle(c, text, fmt.id === "ig-story", frac);
+}
+
+function render(src: Src, fmt: { id: string; w: number; h: number }, f: Focus, subject: Box | null, text: string) {
   const c = document.createElement("canvas");
-  c.width = w; c.height = h;
-  const { sx, sy, cw, ch } = cropRect(img, w, h, f);
-  c.getContext("2d")!.drawImage(img, sx, sy, cw, ch, 0, 0, w, h);
+  c.width = fmt.w; c.height = fmt.h;
+  paint(c, src, fmt, f, subject, text);
   return c;
 }
 
@@ -56,6 +71,13 @@ export default function App() {
   const [colors, setColors] = useState<Swatch[]>([]);
   const [safe, setSafe] = useState(true);
   const [adjusted, setAdjusted] = useState<Record<string, boolean>>({});
+  const [boxes, setBoxes] = useState<Found[]>([]);
+  const [subject, setSubject] = useState<Box | null>(null);
+  const [title, setTitle] = useState("");
+  const [bg, setBg] = useState<string>("original"); // original | transparent | #hex
+  const [cut, setCut] = useState<HTMLCanvasElement | null>(null);
+  const [segBusy, setSegBusy] = useState(false);
+  const [segErr, setSegErr] = useState(false);
   const log = useRef({ t0: 0, ms: 0, method: "", conf: 0, detail: "" });
 
   // Detección con IA en el navegador (MediaPipe, sin servidor ni costo).
@@ -67,6 +89,8 @@ export default function App() {
     try {
       const d = await detectSubject(i);
       setFocus(Object.fromEntries(FORMATS.map((f) => [f.id, d.box ? focusForBox(i, f.w, f.h, d.box) : { x: 0.5, y: 0.5 }])));
+      setBoxes(d.boxes);
+      setSubject(d.box);
       setIa(`IA: ${d.method} · confianza ${d.confidence} · ${d.detail}`);
       setAlt(altText(d.labels, d.faces, pal.map((p) => p.hex)));
       log.current = { ...log.current, ms: Math.round(performance.now() - t), method: d.method, conf: d.confidence, detail: d.detail };
@@ -86,30 +110,56 @@ export default function App() {
       setApproved({});
       setAdjusted({});
       setAlt("");
+      setBoxes([]); setSubject(null); setCut(null); setBg("original"); setTitle(""); setSegErr(false);
       log.current = { t0: performance.now(), ms: 0, method: "", conf: 0, detail: "" };
       void detect(i);
     };
     i.src = url;
   };
 
-  const download = async () => {
+  const work = useMemo<Src | null>(() => {
+    if (!img) return null;
+    if (bg === "original" || !cut) return img;
+    if (bg === "transparent") return cut;
+    const c = document.createElement("canvas");
+    c.width = cut.width; c.height = cut.height;
+    const x = c.getContext("2d")!;
+    x.fillStyle = bg; x.fillRect(0, 0, c.width, c.height); x.drawImage(cut, 0, 0);
+    return c;
+  }, [img, cut, bg]);
+
+  const quitarFondo = async () => {
     if (!img) return;
+    setSegBusy(true); setSegErr(false);
+    try {
+      const hint = subject ? { x: (subject.x0 + subject.x1) / 2, y: (subject.y0 + subject.y1) / 2 } : { x: img.naturalWidth / 2, y: img.naturalHeight / 2 };
+      setCut(await cutout(img, hint));
+      setBg("transparent");
+    } catch { setSegErr(true); }
+    setSegBusy(false);
+  };
+
+  const download = async () => {
+    if (!img || !work) return;
     setBusy(true);
+    const png = bg === "transparent";
     const zip = new JSZip();
     for (const f of FORMATS) {
-      const c = render(img, f.w, f.h, focus[f.id] ?? { x: 0.5, y: 0.5 });
-      const b = await new Promise<Blob>((r) => c.toBlob((x) => r(x!), "image/jpeg", 0.92));
-      zip.file(`${name}_${f.id}_${f.w}x${f.h}.jpg`, b);
+      const c = render(work, f, focus[f.id] ?? { x: 0.5, y: 0.5 }, subject, title);
+      const b = await new Promise<Blob>((r) => c.toBlob((x) => r(x!), png ? "image/png" : "image/jpeg", 0.92));
+      zip.file(`${name}_${f.id}_${f.w}x${f.h}.${png ? "png" : "jpg"}`, b);
     }
     const sinAjuste = FORMATS.filter((f) => approved[f.id] && !adjusted[f.id]).length;
     zip.file(`${name}_alt.txt`, alt);
     zip.file(`${name}_bitacora_ia.json`, JSON.stringify({
-      fecha: new Date().toISOString(), pieza: name, herramienta: "MediaPipe FaceDetector + EfficientDet-Lite0 (en el navegador)",
+      fecha: new Date().toISOString(), pieza: name, herramienta: "MediaPipe FaceDetector + EfficientDet-Lite0 + SelfieSegmenter (en el navegador)",
       metodo: log.current.method, confianza: log.current.conf, detalle: log.current.detail, tiempo_ia_ms: log.current.ms,
       tiempo_hasta_descarga_s: Math.round((performance.now() - log.current.t0) / 1000),
       formatos: FORMATS.map((f) => ({ formato: f.id, aprobado: !!approved[f.id], ajustado_a_mano: !!adjusted[f.id] })),
       aprobados_sin_ajuste: sinAjuste, meta_aprobacion_3_de_4: sinAjuste >= 3,
       texto_alternativo: alt, paleta: colors,
+      detecciones: boxes.map((b) => ({ clase: b.label, confianza: +b.score.toFixed(2) })),
+      fondo: bg === "original" ? "original" : bg === "transparent" ? "quitado con IA (transparente)" : `quitado con IA + color ${bg}`, titular: title || null,
     }, null, 2));
     const blob = await zip.generateAsync({ type: "blob", compression: "STORE" });
     const a = document.createElement("a");
@@ -184,6 +234,45 @@ export default function App() {
               </button>
             </div>
           </div>
+          <section className="card-pop mb-5 grid gap-6 p-5 md:grid-cols-2">
+            <div>
+              <h2 className="font-mono text-xs uppercase tracking-widest">Visión de la IA</h2>
+              <div className="relative mt-3 inline-block max-w-full leading-[0]">
+                <img src={img.src} alt="" className="max-h-72 max-w-full" />
+                {FORMATS.map((f, i) => {
+                  const [iw, ih] = dim(img);
+                  const { sx, sy, cw, ch } = cropRect(img, f.w, f.h, focus[f.id] ?? { x: 0.5, y: 0.5 });
+                  return <div key={f.id} className="pointer-events-none absolute border border-dashed" style={{ left: `${(sx / iw) * 100}%`, top: `${(sy / ih) * 100}%`, width: `${(cw / iw) * 100}%`, height: `${(ch / ih) * 100}%`, borderColor: TONES[i] === "#171717" ? "#ffffff" : TONES[i] }} />;
+                })}
+                {boxes.map((b, i) => {
+                  const [iw, ih] = dim(img);
+                  return (
+                    <div key={i} className="pointer-events-none absolute border-2 border-lime" style={{ left: `${(b.box.x0 / iw) * 100}%`, top: `${(b.box.y0 / ih) * 100}%`, width: `${((b.box.x1 - b.box.x0) / iw) * 100}%`, height: `${((b.box.y1 - b.box.y0) / ih) * 100}%` }}>
+                      <span className="absolute -top-4 left-0 whitespace-nowrap bg-ink px-1 font-mono text-[10px] leading-4 text-lime">{b.label} {Math.round(b.score * 100)}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">Verde: lo que detectó la IA. Punteado: ventana de recorte de cada formato.</p>
+            </div>
+            <div>
+              <h2 className="font-mono text-xs uppercase tracking-widest">Estudio con IA</h2>
+              <div className="mt-3 flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-widest">
+                {!cut ? (
+                  <button onClick={quitarFondo} disabled={segBusy} className="rounded-sm border border-ink px-3 py-2 hover:bg-lime disabled:opacity-50">{segBusy ? "Segmentando…" : "Quitar fondo con IA"}</button>
+                ) : (
+                  <>
+                    <button onClick={() => setBg("original")} className={`rounded-sm border border-ink px-3 py-2 ${bg === "original" ? "bg-lime" : "hover:bg-muted"}`}>Original</button>
+                    <button onClick={() => setBg("transparent")} className={`rounded-sm border border-ink px-3 py-2 ${bg === "transparent" ? "bg-lime" : "hover:bg-muted"}`}>Transparente</button>
+                    {colors.map((c) => <button key={c.hex} onClick={() => setBg(c.hex)} title={`Fondo ${c.hex}`} className={`h-8 w-8 rounded-sm border ${bg === c.hex ? "border-2 border-ink" : "border-ink/40"}`} style={{ background: c.hex }} />)}
+                  </>
+                )}
+              </div>
+              {segErr && <p className="mt-2 text-xs text-destructive">No se pudo segmentar (¿sin conexión para descargar el modelo?).</p>}
+              <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titular (la IA elige dónde ponerlo)" className="mt-4 w-full border border-ink bg-paper px-3 py-2 text-base" />
+              <p className="mt-2 text-xs text-muted-foreground">La IA busca la zona con menos detalle, evita el rostro y la interfaz de Historias, y elige blanco o negro por contraste. Con fondo transparente el ZIP sale en PNG.</p>
+            </div>
+          </section>
           <section className="card-pop mb-5 grid gap-6 p-5 md:grid-cols-3">
             <div>
               <h2 className="font-mono text-xs uppercase tracking-widest">Texto alternativo (IA)</h2>
@@ -214,7 +303,9 @@ export default function App() {
               <FormatCard
                 key={f.id}
                 tone={["bg-lime", "bg-lavender", "bg-tangerine", "bg-ink"][i]!}
-                img={img}
+                img={work ?? img}
+                subject={subject}
+                text={title}
                 fmt={f}
                 safe={safe && f.id === "ig-story"}
                 focus={focus[f.id] ?? { x: 0.5, y: 0.5 }}
@@ -232,8 +323,8 @@ export default function App() {
   );
 }
 
-function FormatCard({ tone, img, fmt, safe, focus, approved, onFocus, onApprove, onReset }: {
-  tone: string; img: HTMLImageElement; fmt: (typeof FORMATS)[number]; safe: boolean; focus: Focus; approved: boolean;
+function FormatCard({ tone, img, subject, text, fmt, safe, focus, approved, onFocus, onApprove, onReset }: {
+  tone: string; img: Src; subject: Box | null; text: string; fmt: (typeof FORMATS)[number]; safe: boolean; focus: Focus; approved: boolean;
   onFocus: (f: Focus) => void; onApprove: () => void; onReset: () => void;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -257,16 +348,16 @@ function FormatCard({ tone, img, fmt, safe, focus, approved, onFocus, onApprove,
     const c = ref.current; if (!c) return;
     const scale = 600 / Math.max(fmt.w, fmt.h);
     c.width = Math.round(fmt.w * scale); c.height = Math.round(fmt.h * scale);
-    const { sx, sy, cw, ch } = cropRect(img, fmt.w, fmt.h, focus);
-    c.getContext("2d")!.drawImage(img, sx, sy, cw, ch, 0, 0, c.width, c.height);
-  }, [img, fmt, focus]);
+    paint(c, img, fmt, focus, subject, text);
+  }, [img, fmt, focus, subject, text]);
 
   const click = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     const { sx, sy, cw, ch } = cropRect(img, fmt.w, fmt.h, focus);
     const px = sx + ((e.clientX - r.left) / r.width) * cw;
     const py = sy + ((e.clientY - r.top) / r.height) * ch;
-    onFocus({ x: px / img.naturalWidth, y: py / img.naturalHeight });
+    const [iw, ih] = dim(img);
+    onFocus({ x: px / iw, y: py / ih });
   };
 
   return (
