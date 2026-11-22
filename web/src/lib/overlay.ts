@@ -1,6 +1,23 @@
 // Titular sobre la imagen: la IA busca la zona más tranquila (menos detalle), evita el sujeto
 // y la zona de interfaz de Historias, y elige blanco/negro por contraste WCAG.
 
+export const FONTS = [
+  { id: "Instrument Serif", w: 400, label: "Instrument Serif" },
+  { id: "Playfair Display", w: 700, label: "Playfair Display" },
+  { id: "DM Serif Display", w: 400, label: "DM Serif Display" },
+  { id: "Anton", w: 400, label: "Anton" },
+  { id: "Bebas Neue", w: 400, label: "Bebas Neue" },
+  { id: "Oswald", w: 600, label: "Oswald" },
+  { id: "Montserrat", w: 800, label: "Montserrat" },
+  { id: "Space Grotesk", w: 700, label: "Space Grotesk" },
+  { id: "Caveat", w: 700, label: "Caveat (manuscrita)" },
+  { id: "Pacifico", w: 400, label: "Pacifico" },
+] as const;
+export const fontCss = (id: string, size: number) => {
+  const f = FONTS.find((x) => x.id === id) ?? FONTS[0];
+  return `${f.w} ${size}px "${f.id}", Georgia, serif`;
+};
+
 export type Frac = { x0: number; y0: number; x1: number; y1: number }; // 0..1 del lienzo
 
 const lum = (r: number, g: number, b: number) => {
@@ -8,7 +25,7 @@ const lum = (r: number, g: number, b: number) => {
   return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
 };
 
-export function drawTitle(c: HTMLCanvasElement, text: string, story: boolean, subject: Frac | null) {
+export function drawTitle(c: HTMLCanvasElement, text: string, story: boolean, subject: Frac | null, font = "Instrument Serif") {
   const t = text.trim();
   if (!t) return null;
   const W = c.width, H = c.height;
@@ -57,7 +74,7 @@ export function drawTitle(c: HTMLCanvasElement, text: string, story: boolean, su
   let size = Math.round(W * (W >= H ? 0.075 : 0.085));
   let lines: string[] = [];
   for (let k = 0; k < 8; k++) {
-    c.getContext("2d")!.font = `${size}px "Instrument Serif", Georgia, serif`;
+    c.getContext("2d")!.font = fontCss(font, size);
     const ctx = c.getContext("2d")!;
     lines = [];
     let cur = "";
@@ -70,7 +87,7 @@ export function drawTitle(c: HTMLCanvasElement, text: string, story: boolean, su
     size = Math.round(size * 0.85);
   }
   const ctx = c.getContext("2d")!;
-  ctx.font = `${size}px "Instrument Serif", Georgia, serif`;
+  ctx.font = fontCss(font, size);
   ctx.fillStyle = color;
   ctx.textBaseline = "top";
   ctx.shadowBlur = 0;

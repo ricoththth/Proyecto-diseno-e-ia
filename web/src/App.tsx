@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import { detectSubject, type Box, type Found } from "./lib/detect";
 import { cutout } from "./lib/segment";
-import { drawTitle } from "./lib/overlay";
+import { drawTitle, FONTS, fontCss } from "./lib/overlay";
 import { altText, palette, type Swatch } from "./lib/extras";
 
 const FORMATS = [
@@ -42,19 +42,19 @@ function focusForBox(img: Src, w: number, h: number, b: Box): Focus {
 }
 
 // Dibuja el recorte (y el titular, si hay) en un lienzo ya dimensionado.
-function paint(c: HTMLCanvasElement, src: Src, fmt: { id: string; w: number; h: number }, f: Focus, subject: Box | null, text: string) {
+function paint(c: HTMLCanvasElement, src: Src, fmt: { id: string; w: number; h: number }, f: Focus, subject: Box | null, text: string, font: string) {
   const { sx, sy, cw, ch } = cropRect(src, fmt.w, fmt.h, f);
   const x = c.getContext("2d")!;
   x.clearRect(0, 0, c.width, c.height);
   x.drawImage(src, sx, sy, cw, ch, 0, 0, c.width, c.height);
   const frac = subject ? { x0: (subject.x0 - sx) / cw, y0: (subject.y0 - sy) / ch, x1: (subject.x1 - sx) / cw, y1: (subject.y1 - sy) / ch } : null;
-  drawTitle(c, text, fmt.id === "ig-story", frac);
+  drawTitle(c, text, fmt.id === "ig-story", frac, font);
 }
 
-function render(src: Src, fmt: { id: string; w: number; h: number }, f: Focus, subject: Box | null, text: string) {
+function render(src: Src, fmt: { id: string; w: number; h: number }, f: Focus, subject: Box | null, text: string, font: string) {
   const c = document.createElement("canvas");
   c.width = fmt.w; c.height = fmt.h;
-  paint(c, src, fmt, f, subject, text);
+  paint(c, src, fmt, f, subject, text, font);
   return c;
 }
 
@@ -74,6 +74,13 @@ export default function App() {
   const [boxes, setBoxes] = useState<Found[]>([]);
   const [subject, setSubject] = useState<Box | null>(null);
   const [title, setTitle] = useState("");
+  const [font, setFont] = useState("Instrument Serif");
+  const [fontTick, setFontTick] = useState(0); // fuerza redibujar cuando la fuente termina de cargar
+  useEffect(() => {
+    let ok = true;
+    void document.fonts.load(fontCss(font, 40), title || "Aa").then(() => ok && setFontTick((n) => n + 1));
+    return () => { ok = false; };
+  }, [font, title]);
   const [bg, setBg] = useState<string>("original"); // original | transparent | #hex
   const [cut, setCut] = useState<HTMLCanvasElement | null>(null);
   const [segBusy, setSegBusy] = useState(false);
@@ -143,9 +150,10 @@ export default function App() {
     if (!img || !work) return;
     setBusy(true);
     const png = bg === "transparent";
+    await document.fonts.load(fontCss(font, 40), title || "Aa");
     const zip = new JSZip();
     for (const f of FORMATS) {
-      const c = render(work, f, focus[f.id] ?? { x: 0.5, y: 0.5 }, subject, title);
+      const c = render(work, f, focus[f.id] ?? { x: 0.5, y: 0.5 }, subject, title, font);
       const b = await new Promise<Blob>((r) => c.toBlob((x) => r(x!), png ? "image/png" : "image/jpeg", 0.92));
       zip.file(`${name}_${f.id}_${f.w}x${f.h}.${png ? "png" : "jpg"}`, b);
     }
@@ -159,7 +167,7 @@ export default function App() {
       aprobados_sin_ajuste: sinAjuste, meta_aprobacion_3_de_4: sinAjuste >= 3,
       texto_alternativo: alt, paleta: colors,
       detecciones: boxes.map((b) => ({ clase: b.label, confianza: +b.score.toFixed(2) })),
-      fondo: bg === "original" ? "original" : bg === "transparent" ? "quitado con IA (transparente)" : `quitado con IA + color ${bg}`, titular: title || null,
+      fondo: bg === "original" ? "original" : bg === "transparent" ? "quitado con IA (transparente)" : `quitado con IA + color ${bg}`, titular: title || null, tipografia: title ? font : null,
     }, null, 2));
     const blob = await zip.generateAsync({ type: "blob", compression: "STORE" });
     const a = document.createElement("a");
@@ -270,6 +278,11 @@ export default function App() {
               </div>
               {segErr && <p className="mt-2 text-xs text-destructive">No se pudo segmentar (¿sin conexión para descargar el modelo?).</p>}
               <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titular (la IA elige dónde ponerlo)" className="mt-4 w-full border border-ink bg-paper px-3 py-2 text-base" />
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {FONTS.map((f) => (
+                  <button key={f.id} onClick={() => setFont(f.id)} className={`truncate rounded-sm border border-ink px-2 py-2 text-lg leading-none ${font === f.id ? "bg-lime" : "hover:bg-muted"}`} style={{ fontFamily: `"${f.id}", serif`, fontWeight: f.w }}>{f.label}</button>
+                ))}
+              </div>
               <p className="mt-2 text-xs text-muted-foreground">La IA busca la zona con menos detalle, evita el rostro y la interfaz de Historias, y elige blanco o negro por contraste. Con fondo transparente el ZIP sale en PNG.</p>
             </div>
           </section>
@@ -306,6 +319,8 @@ export default function App() {
                 img={work ?? img}
                 subject={subject}
                 text={title}
+                font={font}
+                fontTick={fontTick}
                 fmt={f}
                 safe={safe && f.id === "ig-story"}
                 focus={focus[f.id] ?? { x: 0.5, y: 0.5 }}
@@ -323,8 +338,8 @@ export default function App() {
   );
 }
 
-function FormatCard({ tone, img, subject, text, fmt, safe, focus, approved, onFocus, onApprove, onReset }: {
-  tone: string; img: Src; subject: Box | null; text: string; fmt: (typeof FORMATS)[number]; safe: boolean; focus: Focus; approved: boolean;
+function FormatCard({ tone, img, subject, text, font, fontTick, fmt, safe, focus, approved, onFocus, onApprove, onReset }: {
+  tone: string; img: Src; subject: Box | null; text: string; font: string; fontTick: number; fmt: (typeof FORMATS)[number]; safe: boolean; focus: Focus; approved: boolean;
   onFocus: (f: Focus) => void; onApprove: () => void; onReset: () => void;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -348,8 +363,8 @@ function FormatCard({ tone, img, subject, text, fmt, safe, focus, approved, onFo
     const c = ref.current; if (!c) return;
     const scale = 600 / Math.max(fmt.w, fmt.h);
     c.width = Math.round(fmt.w * scale); c.height = Math.round(fmt.h * scale);
-    paint(c, img, fmt, focus, subject, text);
-  }, [img, fmt, focus, subject, text]);
+    paint(c, img, fmt, focus, subject, text, font);
+  }, [img, fmt, focus, subject, text, font, fontTick]);
 
   const click = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
