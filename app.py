@@ -63,6 +63,22 @@ def cors(r):  # permite que el front (Lovable) llame a esta API
     return r
 
 
+@app.route("/api/detectar", methods=["POST", "OPTIONS"])
+def api_detectar():
+    """Solo detección: devuelve método, confianza y el centro sugerido (0-1) por formato."""
+    if request.method == "OPTIONS":
+        return "", 204
+    img = ImageOps.exif_transpose(Image.open(request.files["imagen"].stream)).convert("RGB")
+    w, h = img.size
+    info = detectar_interes(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR))
+    focos = {}
+    for nombre, (tw, th) in FORMATOS.items():
+        caja, _ = calcular_recorte(w, h, info["centro"], info["bbox"], tw, th)
+        focos[nombre] = [(caja[0] + caja[2]) / 2 / w, (caja[1] + caja[3]) / 2 / h]
+    return {"metodo": info["metodo"], "confianza": info["confianza"],
+            "detalle": info["detalle"], "focos": focos}
+
+
 @app.route("/api/exportar", methods=["POST", "OPTIONS"])
 def api_exportar():
     """multipart: imagen [, cx, cy en 0-1 para fijar el centro a mano].
