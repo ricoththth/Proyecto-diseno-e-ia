@@ -237,6 +237,22 @@ function FormatCard({ tone, img, fmt, safe, focus, approved, onFocus, onApprove,
   onFocus: (f: Focus) => void; onApprove: () => void; onReset: () => void;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const holder = useRef<HTMLDivElement>(null);
+  const [fit, setFit] = useState({ w: 0, h: 0 });
+  // Tamaño exacto del lienzo dentro de la caja (para que el overlay coincida con la imagen).
+  useEffect(() => {
+    const el = holder.current; if (!el) return;
+    const calc = () => {
+      const cs = getComputedStyle(el);
+      const aw = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const ah = el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+      const k = Math.min(aw / fmt.w, ah / fmt.h);
+      setFit({ w: Math.floor(fmt.w * k), h: Math.floor(fmt.h * k) });
+    };
+    calc();
+    const ro = new ResizeObserver(calc); ro.observe(el);
+    return () => ro.disconnect();
+  }, [fmt]);
   useEffect(() => {
     const c = ref.current; if (!c) return;
     const scale = 600 / Math.max(fmt.w, fmt.h);
@@ -259,9 +275,9 @@ function FormatCard({ tone, img, fmt, safe, focus, approved, onFocus, onApprove,
         <span>{fmt.name}</span>
         <span className="text-muted-foreground">{fmt.w}×{fmt.h}</span>
       </div>
-      <div className={`mt-4 crop-marks flex h-72 items-center justify-center p-5 ${tone}`}>
-        <div className="relative max-h-full max-w-full">
-          <canvas ref={ref} onClick={click} className="block max-h-full max-w-full cursor-crosshair " />
+      <div ref={holder} className={`mt-4 crop-marks flex h-72 items-center justify-center p-5 ${tone}`}>
+        <div className="relative shrink-0" style={{ width: fit.w, height: fit.h }}>
+          <canvas ref={ref} onClick={click} className="block h-full w-full cursor-crosshair" />
           {safe && (
             <>
               <div className="pointer-events-none absolute inset-x-0 top-0 flex items-end justify-center border-b border-dashed border-white bg-black/45 pb-0.5 font-mono text-[9px] uppercase text-white" style={{ height: "13%" }}>perfil / UI</div>
