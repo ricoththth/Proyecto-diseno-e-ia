@@ -108,6 +108,19 @@ def mapa_saliencia(bgr):
     return cv2.resize(acc, (w, h), interpolation=cv2.INTER_CUBIC)
 
 
+def detectar_personas(bgr, peso_min=0.8):
+    """Detector de personas HOG+SVM incluido en OpenCV (local, sin descargas ni costo).
+    Devuelve [(x, y, w, h, peso)] en coordenadas de la imagen original."""
+    h, w = bgr.shape[:2]
+    esc = min(1.0, 640 / w)
+    peq = cv2.resize(bgr, None, fx=esc, fy=esc) if esc < 1 else bgr
+    hog = cv2.HOGDescriptor()
+    hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+    cajas, pesos = hog.detectMultiScale(peq, winStride=(8, 8), padding=(8, 8), scale=1.05)
+    return [(int(x / esc), int(y / esc), int(bw / esc), int(bh / esc), float(p))
+            for (x, y, bw, bh), p in zip(cajas, np.ravel(pesos)) if p >= peso_min]
+
+
 def _bbox_con_margen(x0, y0, x1, y1, w, h, fx, fy):
     mx, my = int((x1 - x0) * fx), int((y1 - y0) * fy)
     return (int(max(0, x0 - mx)), int(max(0, y0 - my)),
@@ -136,6 +149,19 @@ def detectar_interes(bgr, umbral=UMBRAL_CONFIANZA):
                 "centro": ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2),
                 "confianza": confianza, "detalle": f"{len(rostros)} rostro(s)",
             }
+
+    # 1b) Personas (cuerpo completo) cuando no hay rostro fiable
+    personas = detectar_personas(bgr)
+    if personas:
+        x0 = min(p[0] for p in personas); y0 = min(p[1] for p in personas)
+        x1 = max(p[0] + p[2] for p in personas); y1 = max(p[1] + p[3] for p in personas)
+        bbox = _bbox_con_margen(x0, y0, x1, y1, w, h, 0.08, 0.08)
+        return {
+            "metodo": "persona", "bbox": bbox,
+            "centro": ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2),
+            "confianza": round(min(1.0, max(p[4] for p in personas) / 2.0), 3),
+            "detalle": f"{len(personas)} persona(s) (HOG)",
+        }
 
     # 2) Saliencia
     sal = mapa_saliencia(bgr)

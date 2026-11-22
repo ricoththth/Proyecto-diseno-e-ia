@@ -56,5 +56,36 @@ def descargar(token):
     return send_file(io.BytesIO(ZIPS[token]), as_attachment=True, download_name="piezas.zip")
 
 
+@app.after_request
+def cors(r):  # permite que el front (Lovable) llame a esta API
+    r.headers["Access-Control-Allow-Origin"] = "*"
+    r.headers["Access-Control-Allow-Headers"] = "*"
+    return r
+
+
+@app.route("/api/exportar", methods=["POST", "OPTIONS"])
+def api_exportar():
+    """multipart: imagen [, cx, cy en 0-1 para fijar el centro a mano].
+    Devuelve JSON con método de IA, confianza y las 4 variantes en base64."""
+    if request.method == "OPTIONS":
+        return "", 204
+    img = ImageOps.exif_transpose(Image.open(request.files["imagen"].stream)).convert("RGB")
+    w, h = img.size
+    info = detectar_interes(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR))
+    centro, bbox, metodo = info["centro"], info["bbox"], info["metodo"]
+    if request.form.get("cx") and request.form.get("cy"):
+        centro = (float(request.form["cx"]) * w, float(request.form["cy"]) * h)
+        bbox, metodo = None, "manual"
+    out = []
+    for nombre, (tw, th) in FORMATOS.items():
+        caja, _ = calcular_recorte(w, h, centro, bbox, tw, th)
+        b = io.BytesIO()
+        img.crop(caja).resize((tw, th), Image.LANCZOS).save(b, "PNG")
+        out.append({"formato": nombre, "ancho": tw, "alto": th,
+                    "png_base64": base64.b64encode(b.getvalue()).decode()})
+    return {"metodo": metodo, "confianza": info["confianza"], "detalle": info["detalle"],
+            "centro": [centro[0] / w, centro[1] / h], "variantes": out}
+
+
 if __name__ == "__main__":
     app.run(debug=False)
